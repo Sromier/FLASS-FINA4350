@@ -1,0 +1,306 @@
+#code to extract comments (excepting replies) from a Youtube video:
+
+"""
+Pre- requisit: set up a Google api client and OAUTH2 
+see more:
+https://developers.google.com/youtube/v3/getting-started
+
+pip install google-auth google-auth-oauthlib google-auth-httplib2
+pip install google-api-python-client
+"""
+
+import csv
+import os
+import pickle
+import pandas as pd
+import string
+
+import google.oauth2.credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+
+# The CLIENT_SECRETS_FILE variable specifies the name of a file that contains
+# the OAuth 2.0 information for this application, including its client_id and
+# client_secret.
+CLIENT_SECRETS_FILE = "client_secret.json"
+
+# This OAuth 2.0 access scope allows for full read/write access to the
+# authenticated user's account and requires requests to use an SSL connection.
+SCOPES = ['https://www.googleapis.com/auth/youtube.force-ssl']
+API_SERVICE_NAME = 'youtube'
+API_VERSION = 'v3'
+
+#*** do not change this authentication function ***
+def get_authenticated_service():
+    credentials = None
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            credentials = pickle.load(token)
+    #  Check if the credentials are invalid or do not exist
+    if not credentials or not credentials.valid:
+        # Check if the credentials have expired
+        if credentials and credentials.expired and credentials.refresh_token:
+            credentials.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_SECRETS_FILE, SCOPES)
+            credentials = flow.run_console()
+
+        # Save the credentials for the next run
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(credentials, token)
+
+    return build(API_SERVICE_NAME, API_VERSION, credentials=credentials)
+
+
+def get_video_comments(service, **kwargs):
+    comments = []
+    results = service.commentThreads().list(**kwargs).execute()
+    i = 0
+    print("\nTotal comments: {0} \nResults per page: {1}".format(results['pageInfo']['totalResults'],
+                                                              results['pageInfo']['resultsPerPage']))
+    print("Example output per comment item, snippet")
+    print(results['items'][0]['snippet'].keys())
+    '''
+    if second_time_download:
+        k = 0
+        while results and k < 99: #battlefield5: 589
+            try:
+                if 'nextPageToken' in results:
+                    #print('nextPageToken (already extracted):', results['nextPageToken'])
+                    kwargs['pageToken'] = results['nextPageToken']
+                    results = service.commentThreads().list(**kwargs).execute()
+                    k += 1
+                else:
+                    break
+            except:
+                print("**Error on the {0} th page, nextPageToken: {1}".format(k, results['nextPageToken']))
+                pass
+
+        print("Starting extracting from page", k)
+    '''
+    while results and i < max_comment_per_video:  # commentThreads() maxResults = 100
+        for item in results['items']:
+            comment = [item['snippet']['topLevelComment']['snippet']['textDisplay'],
+                       item['snippet']['topLevelComment']['snippet']['updatedAt'], #publishedAt
+                       item['snippet']['topLevelComment']['snippet']['likeCount']]
+            comments.append(comment)
+            i += 1
+
+        # Check if another page exists
+        try:
+            if 'nextPageToken' in results:
+                #print('nextPageToken', results['nextPageToken'])
+                kwargs['pageToken'] = results['nextPageToken']
+                results = service.commentThreads().list(**kwargs).execute()
+            else:
+                break
+        except:
+            print("**Error on the {0} th page, nextPageToken: {1}".format(i, results['nextPageToken']))
+            pass
+
+    return comments
+
+
+def get_video_stat(service, **kwargs):
+    stats = []
+    results = service.videos().list(**kwargs).execute()
+
+    for item in results['items']:
+        stat = [item['statistics']['viewCount'],
+                    item['statistics']['likeCount'],
+                    item['statistics']['dislikeCount'],
+                    item['statistics']['favoriteCount'],
+                    item['statistics']['commentCount']]
+        stats.append(stat)
+
+    return stats
+
+
+def write_to_csv(Youtube_res_list, fname, comment_file=True, append_write='w'):
+    '''
+    :param append_write:  string, {'a','w'}, choose append option 'a' only if file already exists
+    '''
+    if not os.path.exists(fname+'_comments.csv'):
+        print(fname+'_comments.csv', 'does not exists, creating a new csv file')
+        append_write = 'w'
+
+    with open(fname+'_comments.csv', append_write) as comments_file:
+        comments_writer = csv.writer(comments_file, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+
+        if comment_file:
+            comments_writer.writerow(['publish_time', 'Video ID', 'Title', 'Comment', 'updatedAt', 'likeCount'])
+        elif append_write == 'w':
+            comments_writer.writerow(['publish_time', 'video_ID', 'Title', 'viewCount',
+                                      'likeCount', 'dislikeCount', 'favoriteCount', 'commentCount'])
+        for row in Youtube_res_list:
+            # convert the tuple to a list and write to the output file
+            comments_writer.writerow(list(row))
+
+
+def get_videos(service, **kwargs):
+    final_results = []
+    results = service.search().list(**kwargs).execute()
+
+    i = 0
+    max_pages = 1
+    while results and i < max_pages:
+        final_results.extend(results['items'])
+
+        # Check if another page exists
+        if 'nextPageToken' in results:
+            kwargs['pageToken'] = results['nextPageToken']
+            results = service.search().list(**kwargs).execute()
+            i += 1
+        else:
+            break
+
+    print("Total results: {0} \nResults per page: {1}".format(results['pageInfo']['totalResults'],
+                                                              results['pageInfo']['resultsPerPage']))
+    print("Example output per item, snippet")
+    print(results['items'][0]['snippet'].keys())
+    return final_results
+
+
+def search_videos_by_keyword(service, game, **kwargs):
+    results = get_videos(service, **kwargs)
+    final_result = []
+    game_summary = []
+    for item in results:
+        #if item["id"]["kind"] == "youtube#video":
+        publish_time = item['snippet']['publishedAt']
+        title = item['snippet']['title']
+        video_id = item['id']['videoId']
+
+        stats = get_video_stat(service, part='snippet, statistics', id=video_id)
+
+        comments = get_video_comments(service, part='snippet',
+                                      #pageToken=99,
+                                      maxResults=100,
+                                      videoId=video_id, textFormat='plainText')
+        # make a tuple consisting of the video id, title, comment and add the result to the final list
+        # final_result.extend([(video_id, title, comment) for comment in comments])
+        final_result.extend([[publish_time, video_id, title] + comment for comment in comments])
+        game_summary.extend([[publish_time, video_id, title] + stat for stat in stats])
+        print('Finished scraping', title)
+    write_to_csv(final_result, game, True)
+    return final_result, game_summary
+
+
+Disney = ["inkerbell and the Great Fairy Rescue","Toy Story 3", "Toy Story 2",
+"Tangled","Mars needs Moms","Winnie the Pooh","Cars 2","Brave","Secret of the Wings",
+"Frankenweenie","Wreck-it Ralph","Monsters University", "Planes", "Frozen",
+"The Pirate Fairy","Planes 2","Bige Hero 6", "Legend of the NeverBeast",
+"Inside Out","The Good Dinosaur","Zootopia","Finding Dory","Moana","Cars 3",
+"Indestructibles 2","Ralph Breaks the Internet: Wreck-It Ralph 2","Mary Poppins Returns"]
+
+Marvel = ["Iron Man","The Incredible Hulk","Iron Man 2","Thor","Captain America:First Avenger",
+"Avengers","Iron Man 3","Thor:The Dark World","Captain America:The Winter Soldier",
+"Guardians of the Galaxy","Avengers:Age of Ultron",
+"Ant-Man","Captain America:Civil War","Doctor Strange",
+"Guardians of the Galaxy Vol. 2","Spider-Man: Homecoming",
+"Thor:Ragnarok","Black Panther","Avengers:Infinity War",
+"Ant-Man and the Wasp","Captain Marvel","Avengers:Endgame"]
+
+Paramount = [] #Axel
+
+CenturyFox = [] #Sherry
+
+Sony = ["Venom"] #Florent
+
+
+exemple =["L'orient express"]
+LionsGate = [] #Axel
+
+Warner_Bros = ["Godzilla: King of the Monsters","The Sun Is Also a Star","Detective Pikachu",
+"Nancy Drew and the Hidden Staircase","Isn't it Romantic","The Lego Movie 2: The Second Part",
+"White Snake","Aquaman","The Mule","They Shall Not Grow Old","Mowgli: Legend of the Jungle",
+"Creed 2","Fantastic Beasts: The Crimes of Grindelwald","A Star is Born","The Nun","Crazy Rich Asians",
+"The Meg","Ocean's 8","Rampage","Ready Player One","Tomb Raider","Paddington 2","Justice League","It","Everything, Everything",
+"King Arthur: Legend of the Sword","Unforgettable","The Lego Batman Movie","Fantastic Beasts and Where to Find Them",
+"The Accountant","The Conjuring 2","Point Break","Creed","The Intern","Mad Max: Fury Road","American Sniper","The Hobbit: The Battle of the Five Armies",
+"Edge of Tomorrow", "Godzilla","300: Rise of an Empire","The Lego Movie","Her","Gravity","The Conjuring","Pacific Rim","The Hobbit: The Desolation of Smaug",
+"Prisonners","Man of Steel","Beautiful Creatures","Bullet to the Head","The Hobbit: An Unexpected Journey","Cloud Atlas",
+"Argo","The Dark Knight Rises","Dark Shadows","Wrath of Titans","Sherlock Holmes: A Game of Shadows","Happy Feet Two",
+"Final Destination 5","Contagion","Harry Potter and the Deathly Hallows - Part 2","Green Lantern"] #Florent
+
+Warner_Bros = [] #became Warner Media which belongs AT&T
+
+Universal = ["Steve Jobs","Crimson Peak","Jem and the Holograms","By the Sea","Krampus","Sisters",
+"Ride Along 2","Hail, Caesar!","My big fat greek wedding 2","Popstar: never stop never stopping","Central Intelligence",
+"The Purge: Election Year","Jason Bourne","The girl on the train","Kevin Hart: what now?","Almost Christmas","Ordinary World",
+"Ouija: Origin of evil","Frank & Lola","The Great Wall","The Fate of the furious","The Mummy","Girls trip",
+"Thank you for your service","The Post","Fifty shades Freed","Pacific Rim: uprising","blockers","truth or dare","Breaking in",
+"The first Purge","Mamma mia! Here we go again","The House with a clock in its walls","Night School","First man",
+"Johnny English Strikes again","Green book","Mortal Engines","Welcom to Marwen","Happy Death Day 2U","How to train your Dragon: the Hidden World",
+"Us","Little","Glass","the Hustle","Ma","a Dog's Journey","Yesterday","Fast & Furious presents: Hobbs & Shaw",
+"Good Boys","Abominable","The Addams Family","Last Christmas"] #Universal Belong to Comcast (to upload on github 'comcast') pas avant 2012
+
+Disney_trailer = [i+" official trailer" for i in Disney]
+Marvel_trailer = [i+" official trailer" for i in Marvel]
+Paramount_trailer = [i+" official trailer" for i in Paramount]
+CenturyFox_trailer = [i+" official trailer" for i in CenturyFox]
+Warner_Bros_trailer = [i+" official trailer" for i in Warner_Bros]
+Sony_trailer = [i+" official trailer" for i in Sony]
+exemple_trailer = [i+" official trailer" for i in exemple]
+Universal_trailer = [i+" official trailer" for i in Universal]
+
+for i in Universal:
+    if os.path.exists("%s_comments.csv"%i) == False:
+
+        if __name__ == '__main__':
+            '''************ Input ************'''
+            # region input
+            Input_keyword = True  # if True, need to type in search keyword on terminal
+            max_result_per_page = 1  # display 1-2 video in the search result, default 5 is too many
+            max_comment_per_video = 30000
+            second_time_download = False
+
+            if Input_keyword:
+
+                keyword = i  #input('Enter a keyword: ')  # eg.'Official Call of Duty: Infinite Warfare Reveal Trailer'
+            else:
+                input_file = 'input_game_sh.csv'
+                Game_names = pd.read_csv(input_file, sep=',', header=None, names=['Game'])
+                Game_names.Game = Game_names.Game.astype(str)
+                search_suffix = ' reveal trailer'  # keyword will be game name + suffix, eg. 'Call of Duty reveal trailer'
+
+             # endregion input
+            '''************ End of Input ************'''
+
+            # When running locally, disable OAuthlib's HTTPs verification.
+            # When running in production *do not* leave this option enabled.
+            os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
+            service = get_authenticated_service()
+
+            Game_comment_dict = {}
+            overall_game_summary = []
+
+            if Input_keyword:
+                keyword = keyword.translate(str.maketrans('', '', string.punctuation))
+                print("\nSearching  {}  now...".format(keyword))
+                final_result, game_summary = search_videos_by_keyword(service, keyword, q=keyword,  order='relevance',
+                                                                                        maxResults=max_result_per_page,
+                                                                                        #regionCode='HK', eventType='completed',
+                                                                                        part='id,snippet', type='video')
+                Game_comment_dict[keyword] = final_result
+                overall_game_summary.extend(game_summary)
+            else:
+                # g = Game_names[0]
+                for g in Game_names.Game:
+                    g = g.translate(str.maketrans('', '', string.punctuation))
+                    keyword = g + search_suffix
+                    print("\nSearching  {}  now...".format(keyword))
+
+                    final_result, game_summary = search_videos_by_keyword(service, g, q=keyword,  order='relevance',
+                                                                                        maxResults=max_result_per_page,
+                                                                                        #regionCode='HK', eventType='completed',
+                                                                                        part='id,snippet', type='video')
+                    Game_comment_dict[keyword] = final_result
+                    overall_game_summary.extend(game_summary)
+
+            write_to_csv(overall_game_summary, 'overall', False, 'a')
+    else:
+        continue
