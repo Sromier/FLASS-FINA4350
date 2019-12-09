@@ -7,3 +7,6 @@ Members of team (FINA4350 course)
 - @axhirv Axel Hirvenoja
 - @lynne-xhl Lynne Xue Henglin 
 - @Sromier Sigrid Romier
+
+
+Youtube Data API Documentation about comments: https://developers.google.com/youtube/v3/docs/comments
