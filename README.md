@@ -12,7 +12,7 @@ Members of team (FINA4350 course)
 Youtube Data API Documentation about comments: https://developers.google.com/youtube/v3/docs/comments
 
 
-Gaming-Text-Analysis
+# Gaming-Text-Analysis
 Predict entertainment firms' financials using Youtube comments
 
 Since we switch our focused to movie industry, all working files related to movie trailers are in "/working".
@@ -24,7 +24,7 @@ Youtube Data API Documentation about comments: https://developers.google.com/you
 "GetYoutubeComment.py"
 Due to Youtube API's daily data limit of 10000 units(1 request=1 unit), only extract the first (few) videos on the first page of search results.
 
-Input:
+# Input:
 
 keyword to search relevant videos. Eg: 'Official Call of Duty: Infinite Warfare Reveal Trailer'
 OR a csv file with list of video game names
